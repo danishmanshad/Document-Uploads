@@ -1,0 +1,113 @@
+import pandas as pd
+import numpy as np
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.metrics import mean_squared_error, r2_score
+
+# 1. Load and Prepare Data
+data = pd.read_excel('Optimization_Dataset_mod.xlsx')
+geometry_data = data.iloc[:, 1:15].values
+togw_data = data.iloc[:, -1].values
+l_d_data = data.iloc[:, -2].values
+
+# Normalization constants
+ld_min, ld_max = l_d_data.min(), l_d_data.max()
+togw_min, togw_max = togw_data.min(), togw_data.max()
+
+# 2. Model Training & Evaluation (Random Forest)
+def train_and_evaluate(X, y, target_name):
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    
+    # Initialize Random Forest
+    model = RandomForestRegressor(n_estimators=100, max_depth=10, random_state=42)
+    model.fit(X_train, y_train)
+    
+    # Predictions and Metrics
+    predictions = model.predict(X_test)
+    rmse = np.sqrt(mean_squared_error(y_test, predictions))
+    r2 = r2_score(y_test, predictions)
+    
+    print(f"--- {target_name} Model Metrics ---")
+    print(f"RMSE: {rmse:.4f}")
+    print(f"R² Score: {r2:.4f}\n")
+    return model
+
+model_ld = train_and_evaluate(geometry_data, l_d_data, "L/D Ratio")
+model_togw = train_and_evaluate(geometry_data, togw_data, "TOGW")
+
+# 3. Fitness Function (Weighted 0.5/0.5)
+def get_fitness(individual):
+    ind_reshaped = individual.reshape(1, -1)
+    pred_ld = model_ld.predict(ind_reshaped)[0]
+    pred_togw = model_togw.predict(ind_reshaped)[0]
+    
+    # Normalize: Maximize L/D, Minimize TOGW
+    norm_ld = (pred_ld - ld_min) / (ld_max - ld_min)
+    norm_togw = (togw_max - pred_togw) / (togw_max - togw_min)
+    
+    return (0.5 * norm_ld) + (0.5 * norm_togw)
+
+# --- GA Helper Functions ---
+
+def tournament_selection(population, fitness_values, size=3):
+    indices = np.random.choice(len(population), size, replace=False)
+    best_idx = indices[np.argmax(fitness_values[indices])]
+    return population[best_idx]
+
+def crossover(p1, p2):
+    pt = np.random.randint(1, len(p1)-1)
+    return np.concatenate((p1[:pt], p2[pt:])), np.concatenate((p2[:pt], p1[pt:]))
+
+def mutate(ind, rate):
+    for i in range(len(ind)):
+        if np.random.rand() < rate:
+            ind[i] = np.random.uniform(np.min(geometry_data[:, i]), np.max(geometry_data[:, i]))
+    return ind
+
+# 4. GA Loop with Elitism
+def genetic_algorithm(pop_size=70, gens=150, mut_rate=0.01, cross_rate=0.8):
+    # Initialize population from original data or random
+    population = geometry_data[:pop_size].copy() 
+    
+    for gen in range(gens):
+        # Calculate current fitness
+        fitness = np.array([get_fitness(ind) for ind in population])
+        
+        # ELITISM: Identify the best individual
+        best_idx = np.argmax(fitness)
+        elite = population[best_idx].copy()
+        
+        new_population = [elite] # Start new generation with the elite
+        
+        while len(new_population) < pop_size:
+            p1 = tournament_selection(population, fitness)
+            p2 = tournament_selection(population, fitness)
+            
+            if np.random.rand() < cross_rate:
+                c1, c2 = crossover(p1, p2)
+            else:
+                c1, c2 = p1.copy(), p2.copy()
+            
+            new_population.append(mutate(c1, mut_rate))
+            if len(new_population) < pop_size:
+                new_population.append(mutate(c2, mut_rate))
+                
+        population = np.array(new_population)
+        if (gen + 1) % 10 == 0:
+            print(f"Gen {gen+1}: Top Fitness = {np.max(fitness):.4f}")
+
+    # Final Evaluation
+    final_fitness = np.array([get_fitness(ind) for ind in population])
+    best_idx = np.argmax(final_fitness)
+    return population[best_idx], final_fitness[best_idx]
+
+# 5. Execute
+best_geom, best_fit = genetic_algorithm()
+
+print("-" * 30)
+print("FINAL OPTIMIZED RESULTS")
+print("-" * 30)
+print(f"Composite Fitness: {best_fit:.4f}")
+print(f"Predicted L/D:     {model_ld.predict(best_geom.reshape(1,-1))[0]:.4f}")
+print(f"Predicted TOGW:    {model_togw.predict(best_geom.reshape(1,-1))[0]:.4f}")
+print(f"Geometry Vector:\n{best_geom}")
